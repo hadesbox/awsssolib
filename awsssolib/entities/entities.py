@@ -229,6 +229,81 @@ class Account(Entity):
             return []
         return response.json().get('profileList', [])
 
+    @property
+    def associated_users(self):
+        """The associated users with the profiles associated with an Account.
+
+        Returns:
+            complete_response (dict): The Users associated with the Profile
+
+        """
+        target = 'com.amazon.switchboard.service.SWBService.ListAWSAccountProfiles'
+        payload = self._sso.get_api_payload(content_string={'instanceId': self.instance_id},
+                                            target='ListAWSAccountProfiles',
+                                            path='/control/',
+                                            x_amz_target=target)
+        self.logger.debug('Trying to provision application profile for aws account with payload: %s', payload)
+        response = self._sso.session.post(self.url, json=payload)
+        if not response.ok:
+            self.logger.error(response.text)
+            return []
+
+        complete_response = {}
+        account_name = self.name
+        account_id = self.id
+        complete_response[account_id] = {}
+        for profile in response.json().get('profileList', []):
+            profile_name = profile['name']
+            #print("Getting Users for profile {} in account {}".format(profile_name, self.name))
+            content_payload = {'instanceId': self.instance_id,
+                               'profileId': profile['profileId'],
+                               'directoryType': 'UserPool',
+                               'directoryId': self._sso.directory_id}
+            target = 'com.amazon.switchboard.service.SWBService.ListProfileAssociations'
+
+            payload = self._sso.get_api_payload(content_string=content_payload,
+                                                target='ListProfileAssociations',
+                                                path='/control/',
+                                                x_amz_target=target)
+
+            end_of_list = False
+            local_users = []
+
+            while not end_of_list:
+                #print('================================= {} {} {}'.format(self.id, profile_name, payload))
+                response = self._sso.session.post(self.url, json=payload)
+
+                #print('**** RESPONSE {}'.format(response.json()))
+
+                for user in response.json().get('assignments'):
+                    if 'firstName' in user['accessor']['display']:
+                        first_name = user['accessor']['display']['firstName']
+                    else:
+                        first_name = 'NotProvided'
+                    if 'lastName' in user['accessor']['display']:
+                        last_name = user['accessor']['display']['lastName']
+                    else:
+                        last_name = 'NotProvided'
+                    if 'userName' in user['accessor']['display']:
+                        user_name = user['accessor']['display']['userName']
+                    else:
+                        user_name = 'NotProvided'
+                    local_users.append(user_name)
+
+                if 'marker' in response.json():
+                    self.logger.debug("needs paging {}".format(payload['contentString']))
+                    paging_content_payload = content_payload
+                    paging_content_payload['marker'] = response.json().get('marker')
+                    payload['contentString'] = json.dumps(paging_content_payload)
+                else:
+                    self.logger.debug('no paging needed')
+                    end_of_list=True
+            self.logger.debug('USERS FOUND {} {} {}'.format(profile_name, len(local_users), local_users))
+            complete_response[account_id][profile_name] = local_users
+            if not response.ok:
+                self.logger.error(response.text)
+                return []
+        return complete_response
 
 class User(Entity):
     """Models the user object of SSO."""
